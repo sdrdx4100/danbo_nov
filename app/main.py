@@ -61,8 +61,9 @@ async def index(
     images = result.scalars().all()
 
     return templates.TemplateResponse(
-        "index.html",
-        {"request": request, "images": images},
+        request=request,
+        name="index.html",
+        context={"images": images},
     )
 
 
@@ -91,9 +92,9 @@ async def dashboard(
     total_count = total_result.scalar() or 0
 
     return templates.TemplateResponse(
-        "dashboard.html",
-        {
-            "request": request,
+        request=request,
+        name="dashboard.html",
+        context={
             "score_history": score_history,
             "best_trials": best_trials,
             "tag_stats": tag_stats,
