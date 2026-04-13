@@ -125,7 +125,7 @@ class PromptOptimizer:
         for tag in selected_tags:
             display_tag = tag.replace("_", " ")
             if tag in self._high_score_tags:
-                # Emphasise high-scoring tags with {{}} (NovelAI syntax)
+                # Emphasize high-scoring tags with {{}} (NovelAI syntax)
                 prompt_parts.append(f"{{{{{display_tag}}}}}")
             else:
                 # Apply random mild emphasis

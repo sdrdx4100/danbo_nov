@@ -145,7 +145,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (e.key === 'g' || e.key === 'G') {
       e.preventDefault();
-      document.getElementById('generateForm').dispatchEvent(new Event('submit'));
+      document.getElementById('generateForm').requestSubmit();
       return;
     }
 
