@@ -1,0 +1,261 @@
+{% extends "base.html" %}
+
+{% block title %}Gallery – Danbo Nov{% endblock %}
+{% block nav_home %}text-brand-500 font-semibold{% endblock %}
+
+{% block content %}
+<!-- Generate Controls -->
+<section class="mb-8">
+  <div class="bg-gray-900 rounded-xl p-6 border border-gray-800">
+    <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+      <svg class="w-5 h-5 text-brand-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      Generate New Image
+    </h2>
+    <form id="generateForm" class="flex flex-col sm:flex-row gap-3">
+      <input
+        type="text"
+        name="keyword"
+        id="keyword"
+        value="1girl"
+        placeholder="Base keyword (e.g. 1girl, landscape)"
+        class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
+      />
+      <button
+        type="submit"
+        id="generateBtn"
+        class="bg-brand-600 hover:bg-brand-700 text-white px-6 py-2.5 rounded-lg font-medium transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg>
+        Generate
+      </button>
+    </form>
+    <p id="generateStatus" class="mt-3 text-sm text-gray-400 hidden"></p>
+  </div>
+</section>
+
+<!-- Keyboard shortcuts help -->
+<section class="mb-6">
+  <div class="bg-gray-900/50 rounded-lg px-4 py-3 border border-gray-800 text-sm text-gray-400">
+    <strong class="text-gray-300">Keyboard Shortcuts:</strong>
+    Click an image to select it, then press <kbd class="bg-gray-700 px-1.5 py-0.5 rounded text-xs">1</kbd>–<kbd class="bg-gray-700 px-1.5 py-0.5 rounded text-xs">5</kbd> to rate.
+    Press <kbd class="bg-gray-700 px-1.5 py-0.5 rounded text-xs">0</kbd> for score 0.
+    <kbd class="bg-gray-700 px-1.5 py-0.5 rounded text-xs">G</kbd> to generate a new image.
+  </div>
+</section>
+
+<!-- Image Gallery -->
+<section>
+  <h2 class="text-lg font-semibold mb-4">Generated Images</h2>
+  <div id="gallery" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+    {% for img in images %}
+    <div
+      class="image-card group bg-gray-900 rounded-xl border border-gray-800 overflow-hidden fade-in cursor-pointer hover:border-brand-500 transition-colors"
+      data-id="{{ img.id }}"
+      data-trial="{{ img.optuna_trial_id }}"
+      tabindex="0"
+    >
+      <div class="aspect-[2/3] overflow-hidden bg-gray-800">
+        <img
+          src="/static/{{ img.image_path }}"
+          alt="Generated image #{{ img.id }}"
+          class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+          loading="lazy"
+        />
+      </div>
+      <div class="p-3">
+        <!-- Score display -->
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs text-gray-500">#{{ img.id }}</span>
+          <span class="score-display text-sm font-medium {% if img.score is not none %}text-yellow-400{% else %}text-gray-600{% endif %}">
+            {% if img.score is not none %}
+              ★ {{ "%.1f"|format(img.score) }}
+            {% else %}
+              Unrated
+            {% endif %}
+          </span>
+        </div>
+        <!-- Rating buttons -->
+        <div class="flex gap-1 justify-center rating-row">
+          {% for s in range(6) %}
+          <button
+            class="rating-btn w-8 h-8 rounded-lg text-xs font-bold
+              {% if img.score is not none and img.score|round == s %}
+                bg-brand-600 text-white
+              {% else %}
+                bg-gray-800 text-gray-400 hover:bg-gray-700
+              {% endif %}
+            "
+            data-image-id="{{ img.id }}"
+            data-score="{{ s }}"
+            title="Rate {{ s }}"
+          >{{ s }}</button>
+          {% endfor %}
+        </div>
+        <!-- Prompt (collapsed) -->
+        <details class="mt-2">
+          <summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300">Prompt</summary>
+          <p class="text-xs text-gray-400 mt-1 break-all">{{ img.positive_prompt[:200] }}</p>
+        </details>
+      </div>
+    </div>
+    {% else %}
+    <div class="col-span-full text-center py-16 text-gray-500">
+      <svg class="w-16 h-16 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+      <p class="text-lg">No images generated yet</p>
+      <p class="text-sm mt-1">Enter a keyword above and click Generate to start</p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const gallery = document.getElementById('gallery');
+  let selectedCard = null;
+
+  // --- Image card selection ---
+  gallery.addEventListener('click', (e) => {
+    const card = e.target.closest('.image-card');
+    if (!card) return;
+
+    // Deselect previous
+    if (selectedCard) selectedCard.classList.remove('ring-2', 'ring-brand-500');
+    selectedCard = card;
+    card.classList.add('ring-2', 'ring-brand-500');
+    card.focus();
+  });
+
+  // --- Rating buttons ---
+  gallery.addEventListener('click', (e) => {
+    const btn = e.target.closest('.rating-btn');
+    if (!btn) return;
+    e.stopPropagation();
+
+    const imageId = btn.dataset.imageId;
+    const score = parseFloat(btn.dataset.score);
+    submitRating(imageId, score, btn.closest('.image-card'));
+  });
+
+  // --- Keyboard shortcuts ---
+  document.addEventListener('keydown', (e) => {
+    // Don't trigger when typing in input
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+    if (e.key === 'g' || e.key === 'G') {
+      e.preventDefault();
+      document.getElementById('generateForm').dispatchEvent(new Event('submit'));
+      return;
+    }
+
+    if (selectedCard && e.key >= '0' && e.key <= '5') {
+      e.preventDefault();
+      const imageId = selectedCard.dataset.id;
+      const score = parseInt(e.key);
+      submitRating(imageId, score, selectedCard);
+    }
+  });
+
+  // --- Generate form ---
+  document.getElementById('generateForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('generateBtn');
+    const status = document.getElementById('generateStatus');
+    const keyword = document.getElementById('keyword').value;
+
+    btn.disabled = true;
+    status.textContent = 'Generating image…';
+    status.classList.remove('hidden', 'text-red-400');
+    status.classList.add('text-gray-400');
+
+    try {
+      const formData = new FormData();
+      formData.append('keyword', keyword);
+
+      const resp = await fetch('/api/generate', { method: 'POST', body: formData });
+      const data = await resp.json();
+
+      if (!resp.ok) {
+        status.textContent = data.error || 'Generation failed';
+        status.classList.add('text-red-400');
+        return;
+      }
+
+      // Add new image card to the top of gallery
+      const emptyMsg = gallery.querySelector('.col-span-full');
+      if (emptyMsg) emptyMsg.remove();
+
+      const card = createImageCard(data);
+      gallery.insertBefore(card, gallery.firstChild);
+      status.textContent = `Generated image #${data.id} (Trial ${data.trial})`;
+    } catch (err) {
+      status.textContent = 'Network error: ' + err.message;
+      status.classList.add('text-red-400');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // --- Helper: submit rating ---
+  async function submitRating(imageId, score, card) {
+    const formData = new FormData();
+    formData.append('score', score);
+
+    try {
+      const resp = await fetch(`/api/rate/${imageId}`, { method: 'POST', body: formData });
+      if (resp.ok) {
+        // Update UI
+        const scoreDisplay = card.querySelector('.score-display');
+        scoreDisplay.textContent = `★ ${score.toFixed(1)}`;
+        scoreDisplay.className = 'score-display text-sm font-medium text-yellow-400';
+
+        // Update active button
+        card.querySelectorAll('.rating-btn').forEach((btn) => {
+          const btnScore = parseInt(btn.dataset.score);
+          if (btnScore === score) {
+            btn.className = 'rating-btn w-8 h-8 rounded-lg text-xs font-bold bg-brand-600 text-white';
+          } else {
+            btn.className = 'rating-btn w-8 h-8 rounded-lg text-xs font-bold bg-gray-800 text-gray-400 hover:bg-gray-700';
+          }
+        });
+      }
+    } catch (err) {
+      console.error('Rating failed:', err);
+    }
+  }
+
+  // --- Helper: create image card dynamically ---
+  function createImageCard(data) {
+    const div = document.createElement('div');
+    div.className = 'image-card group bg-gray-900 rounded-xl border border-gray-800 overflow-hidden fade-in cursor-pointer hover:border-brand-500 transition-colors';
+    div.dataset.id = data.id;
+    div.dataset.trial = data.trial;
+    div.tabIndex = 0;
+
+    let ratingBtns = '';
+    for (let s = 0; s <= 5; s++) {
+      ratingBtns += `<button class="rating-btn w-8 h-8 rounded-lg text-xs font-bold bg-gray-800 text-gray-400 hover:bg-gray-700" data-image-id="${data.id}" data-score="${s}" title="Rate ${s}">${s}</button>`;
+    }
+
+    div.innerHTML = `
+      <div class="aspect-[2/3] overflow-hidden bg-gray-800">
+        <img src="${data.image_url}" alt="Generated image #${data.id}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" loading="lazy" />
+      </div>
+      <div class="p-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs text-gray-500">#${data.id}</span>
+          <span class="score-display text-sm font-medium text-gray-600">Unrated</span>
+        </div>
+        <div class="flex gap-1 justify-center rating-row">${ratingBtns}</div>
+        <details class="mt-2">
+          <summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300">Prompt</summary>
+          <p class="text-xs text-gray-400 mt-1 break-all">${data.positive_prompt.substring(0, 200)}</p>
+        </details>
+      </div>
+    `;
+    return div;
+  }
+});
+</script>
+{% endblock %}

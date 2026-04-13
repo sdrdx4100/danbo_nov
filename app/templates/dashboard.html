@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard – Danbo Nov{% endblock %}
+{% block nav_dashboard %}text-brand-500 font-semibold{% endblock %}
+
+{% block content %}
+<!-- Stats Overview -->
+<section class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+  <div class="bg-gray-900 rounded-xl p-5 border border-gray-800">
+    <p class="text-sm text-gray-500 mb-1">Total Generated</p>
+    <p class="text-3xl font-bold text-gray-100">{{ total_count }}</p>
+  </div>
+  <div class="bg-gray-900 rounded-xl p-5 border border-gray-800">
+    <p class="text-sm text-gray-500 mb-1">Rated Images</p>
+    <p class="text-3xl font-bold text-gray-100">{{ rated_count }}</p>
+  </div>
+  <div class="bg-gray-900 rounded-xl p-5 border border-gray-800">
+    <p class="text-sm text-gray-500 mb-1">Average Score</p>
+    <p class="text-3xl font-bold text-yellow-400">★ {{ avg_score }}</p>
+  </div>
+</section>
+
+<!-- Score History Chart -->
+<section class="mb-8">
+  <div class="bg-gray-900 rounded-xl p-6 border border-gray-800">
+    <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+      <svg class="w-5 h-5 text-brand-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+      Score History
+    </h2>
+    <div id="scoreChart" class="h-48 flex items-end gap-1 overflow-x-auto pb-2">
+      {% if score_history %}
+        {% for item in score_history %}
+        <div class="flex flex-col items-center min-w-[28px]" title="Trial {{ item.trial }}: {{ item.score }}">
+          <span class="text-xs text-gray-500 mb-1">{{ item.score }}</span>
+          <div
+            class="w-6 rounded-t transition-all"
+            style="height: {{ (item.score / 5 * 150)|int }}px; background: linear-gradient(to top, #0ea5e9, #38bdf8);"
+          ></div>
+          <span class="text-xs text-gray-600 mt-1">{{ item.trial }}</span>
+        </div>
+        {% endfor %}
+      {% else %}
+        <p class="text-gray-500 text-sm m-auto">No scored trials yet</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<!-- Two-column: Top Tags + Best Trials -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <!-- Top Tags -->
+  <section>
+    <div class="bg-gray-900 rounded-xl p-6 border border-gray-800 h-full">
+      <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+        <svg class="w-5 h-5 text-brand-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+        Top Tags (by frequency)
+      </h2>
+      {% if tag_stats %}
+      <div class="space-y-2 max-h-80 overflow-y-auto">
+        {% for tag in tag_stats %}
+        <div class="flex items-center gap-3">
+          <div class="flex-1">
+            <div class="flex justify-between text-sm mb-1">
+              <span class="text-gray-300">{{ tag.tag }}</span>
+              <span class="text-gray-500">×{{ tag.count }} · ★{{ tag.avg_score }}</span>
+            </div>
+            <div class="w-full bg-gray-800 rounded-full h-1.5">
+              <div
+                class="h-1.5 rounded-full"
+                style="width: {{ (tag.avg_score / 5 * 100)|int }}%; background: {% if tag.avg_score >= 4 %}#22c55e{% elif tag.avg_score >= 2.5 %}#eab308{% else %}#ef4444{% endif %};"
+              ></div>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="text-gray-500 text-sm">No tag data yet</p>
+      {% endif %}
+    </div>
+  </section>
+
+  <!-- Best Trials -->
+  <section>
+    <div class="bg-gray-900 rounded-xl p-6 border border-gray-800 h-full">
+      <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+        <svg class="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        Best Trials
+      </h2>
+      {% if best_trials %}
+      <div class="space-y-3">
+        {% for trial in best_trials %}
+        <div class="bg-gray-800/50 rounded-lg p-3">
+          <div class="flex justify-between items-center mb-1">
+            <span class="font-medium text-gray-200">Trial #{{ trial.number }}</span>
+            <span class="text-yellow-400 font-bold">★ {{ trial.value }}</span>
+          </div>
+          <p class="text-xs text-gray-500">
+            {{ trial.params|length }} parameters tuned
+          </p>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="text-gray-500 text-sm">No completed trials yet</p>
+      {% endif %}
+    </div>
+  </section>
+</div>
+{% endblock %}
