@@ -314,6 +314,7 @@
     #dnai-status { margin: 6px 0; min-height: 18px; color: #9ca3af; word-break: break-all; }
     #dnai-results { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     #dnai-results .card { background: #11151c; border: 1px solid #2a3140; border-radius: 8px; padding: 6px; }
+    #dnai-results .card.dry { border-style: dashed; border-color: #4b5563; }
     #dnai-results img { width: 100%; border-radius: 4px; display: block; }
     #dnai-results details { margin-top: 4px; }
     #dnai-results summary { cursor: pointer; color: #93c5fd; }
@@ -348,6 +349,7 @@
         <div class="row">
           <button id="dnai-run">▶ 生成開始</button>
           <button id="dnai-stop" class="sec" disabled>⏹ 停止</button>
+          <button id="dnai-clear" class="sec">🗑 クリア</button>
           <button id="dnai-settings" class="sec">⚙ 設定</button>
         </div>
         <div id="dnai-status"></div>
@@ -361,9 +363,13 @@
     $('#dnai-status').textContent = msg;
   };
 
-  function addResult(imgUrl, prompt, label) {
+  const objectUrls = [];
+
+  function addResult(imgUrl, prompt, label, opts = {}) {
     const card = el(`<div class="card"></div>`);
+    if (opts.dry) card.classList.add('dry');
     if (imgUrl) {
+      objectUrls.push(imgUrl);
       const a = el(`<a download="novelai.png"></a>`);
       a.href = imgUrl;
       const img = el(`<img>`);
@@ -374,10 +380,18 @@
     const lab = el(`<div class="label"></div>`);
     lab.textContent = label || '';
     card.appendChild(lab);
-    const det = el(`<details><summary>prompt</summary><div class="prompt"></div></details>`);
+    // dry runはタグを見るのが目的なので最初から開いておく
+    const det = el(
+      `<details${opts.dry ? ' open' : ''}><summary>prompt</summary><div class="prompt"></div></details>`
+    );
     det.querySelector('.prompt').textContent = prompt;
     card.appendChild(det);
     $('#dnai-results').prepend(card);
+  }
+
+  function clearResults() {
+    objectUrls.splice(0).forEach((u) => URL.revokeObjectURL(u));
+    $('#dnai-results').textContent = '';
   }
 
   function setRunning(state) {
@@ -391,11 +405,10 @@
     console.log('[D→NAI]', label, '\n  tags:', tags, '\n  prompt:', prompt);
 
     if ($('#dnai-dry').checked) {
-      addResult(null, prompt, `${label} (dry run)`);
+      addResult(null, prompt, `${label} (dry run)`, { dry: true });
       return;
     }
 
-    setStatus(`生成中: ${label} ...`);
     const zip = await naiGenerate(prompt);
     const png = await extractFirstPng(zip);
     const url = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
@@ -404,7 +417,9 @@
 
   async function run() {
     if (running) return;
+    const dry = $('#dnai-dry').checked;
     setRunning(true);
+    clearResults();
     try {
       let searchTags = getSearchTags();
       if (!searchTags) {
@@ -427,23 +442,38 @@
       console.log(`[D→NAI] ${posts.length}件取得`);
 
       if (cfg('mode') === 'shuffle') {
+        if (!dry && !confirm('NovelAIで1枚生成します（Anlasを消費）。続行しますか？')) {
+          setStatus('キャンセルしました');
+          return;
+        }
         const pool = new Map();
         posts.forEach((p) =>
           extractTags(p).all.forEach((t) => pool.set(t, (pool.get(t) || 0) + 1))
         );
         const tags = shuffle([...pool.keys()]).slice(0, Number(cfg('shuffleCount')));
+        if (!dry) setStatus('生成中: shuffle ...');
         await generateAndShow(tags, 'shuffle');
       } else {
-        for (const post of posts) {
+        // iterateで生成する投稿（タグありのみ）を先に確定させてからAnlas確認
+        const targets = posts.filter((p) => extractTags(p).all.length);
+        if (!dry && targets.length) {
+          if (!confirm(`NovelAIで最大${targets.length}枚生成します（${targets.length}回Anlas消費）。続行しますか？`)) {
+            setStatus('キャンセルしました');
+            return;
+          }
+        }
+        let done = 0;
+        for (const post of targets) {
           if (!running) break;
-          const { all } = extractTags(post);
-          if (!all.length) continue;
-          await generateAndShow(all, `post #${post.id}`);
+          const label = `post #${post.id} (${done + 1}/${targets.length})`;
+          if (!dry) setStatus(`生成中: ${label} ...`);
+          await generateAndShow(extractTags(post).all, label);
+          done++;
           if (!running) break;
-          if (!$('#dnai-dry').checked) await sleep(Number(cfg('delayMs')));
+          if (!dry) await sleep(Number(cfg('delayMs')));
         }
       }
-      setStatus('完了');
+      setStatus(running ? '完了' : '停止しました');
     } catch (e) {
       console.error('[D→NAI]', e);
       setStatus('エラー: ' + e.message);
@@ -483,7 +513,14 @@
     $('#dnai-toggle').textContent = panel.classList.contains('dnai-collapsed') ? '▸' : '▾';
   });
   $('#dnai-run').addEventListener('click', run);
-  $('#dnai-stop').addEventListener('click', () => setStatus('停止します...') || setRunning(false));
+  $('#dnai-stop').addEventListener('click', () => {
+    setStatus('停止します（生成中の1枚を待っています）...');
+    running = false;
+  });
+  $('#dnai-clear').addEventListener('click', () => {
+    clearResults();
+    setStatus('');
+  });
   $('#dnai-settings').addEventListener('click', openSettingsEditor);
   $('#dnai-mode').addEventListener('change', (e) => setCfg('mode', e.target.value));
   $('#dnai-limit').addEventListener('change', (e) =>

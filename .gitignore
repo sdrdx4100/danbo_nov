@@ -11,3 +11,6 @@ static/*.jpg
 static/*.webp
 .venv/
 venv/
+
+# local screenshot/test harness
+scratchpad/
