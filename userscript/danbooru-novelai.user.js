@@ -13,6 +13,7 @@
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
+// @grant        GM_setClipboard
 // @run-at       document-idle
 // @noframes
 // ==/UserScript==
@@ -42,7 +43,6 @@
     steps: 28,
     scale: 5,
     sampler: 'k_euler_ancestral',
-    qualitySuffix: 'best quality, amazing quality, very aesthetic, absurdres',
     negative:
       'lowres, worst quality, low quality, bad anatomy, bad hands, jpeg artifacts, '
       + 'signature, watermark, username, blurry, text, error, extra digits',
@@ -50,6 +50,7 @@
     mode: 'iterate', // 'iterate' = 投稿を1件ずつ / 'shuffle' = 全タグをシャッフル合成
     shuffleCount: 14, // shuffle時に使うタグ数
     delayMs: 2000, // iterate時の生成間隔(ms) ※Anlas消費に注意
+    tagScope: 'both', // 'both' = character+general / 'character' / 'general'
   };
 
   // 設定キー一覧（JSONエディタで編集できるもの）
@@ -63,6 +64,29 @@
 
   const getToken = () => GM_getValue('nai_token', '');
   const setToken = (t) => GM_setValue('nai_token', t);
+
+  // ---------------------------------------------------------------------------
+  // ベースプリセット (NovelAIの「チャンク」相当)
+  //   絵柄・品質・アーティストなどの「固定の型」を名前付きで保存しておき、
+  //   Danbooruから取った被写体タグ(character+general)を {tags} 位置に差し込む。
+  //   {tags} が無ければ末尾に追記する。
+  // ---------------------------------------------------------------------------
+  const DEFAULT_PRESETS = {
+    'デフォルト': 'very aesthetic, best quality, amazing quality, absurdres, {tags}',
+  };
+
+  const getPresets = () => GM_getValue('base_presets', DEFAULT_PRESETS);
+  const setPresets = (p) => GM_setValue('base_presets', p);
+
+  function getActivePresetName() {
+    const presets = getPresets();
+    const names = Object.keys(presets);
+    let name = GM_getValue('active_base', names[0]);
+    if (!(name in presets)) name = names[0];
+    return name;
+  }
+  const setActivePresetName = (name) => GM_setValue('active_base', name);
+  const getBaseText = () => getPresets()[getActivePresetName()] || '{tags}';
 
   // ---------------------------------------------------------------------------
   // 汎用ヘルパ
@@ -125,6 +149,7 @@
 
   // ---------------------------------------------------------------------------
   // ② タグ抽出: general + character のみ (artist/copyright/meta は捨てる)
+  //    被写体タグだけを取り出す。絵柄/品質/アーティストはベースプリセット側で固定。
   // ---------------------------------------------------------------------------
   function extractTags(post) {
     const split = (s) => (s || '').split(/\s+/).filter(Boolean);
@@ -134,8 +159,22 @@
     return { general, character, all: [...character, ...general] };
   }
 
+  // tagScope に応じて被写体タグを選ぶ
+  function scopedTags(post) {
+    const t = extractTags(post);
+    switch (cfg('tagScope')) {
+      case 'character':
+        return t.character;
+      case 'general':
+        return t.general;
+      default:
+        return t.all;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // ③ NovelAI プロンプト組み立て
+  //    固定ベース(型) に 被写体タグ を {tags} 位置で差し込む。なければ末尾に追記。
   // ---------------------------------------------------------------------------
   function tagToNai(t) {
     // Danbooru形式 underscore → space、括弧はNAIの記法と衝突するのでエスケープ
@@ -144,8 +183,10 @@
 
   function buildPrompt(tags) {
     const body = tags.map(tagToNai).join(', ');
-    const suffix = cfg('qualitySuffix');
-    return suffix ? `${body}, ${suffix}` : body;
+    const base = (getBaseText() || '').trim();
+    if (!base) return body;
+    if (base.includes('{tags}')) return base.replace(/\{tags\}/g, body);
+    return body ? `${base}, ${body}` : base;
   }
 
   function buildPayload(positive, negative, seed) {
@@ -305,11 +346,19 @@
       background: #11151c; color: #e6e6e6; border: 1px solid #3a4150; border-radius: 6px; padding: 3px 6px;
     }
     #dnai-panel input[type=number] { width: 64px; }
+    #dnai-panel select#dnai-base { flex: 1; min-width: 0; }
+    #dnai-panel textarea {
+      width: 100%; box-sizing: border-box; resize: vertical; min-height: 48px;
+      background: #11151c; color: #e6e6e6; border: 1px solid #3a4150; border-radius: 6px;
+      padding: 5px 7px; font: 12px/1.4 ui-monospace, monospace;
+    }
+    #dnai-panel .hint { font-size: 11px; color: #6b7280; margin: 2px 0 6px; }
     #dnai-panel button {
       background: #3b82f6; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px;
       cursor: pointer; font-size: 13px;
     }
     #dnai-panel button.sec { background: #4b5563; }
+    #dnai-panel button.mini { padding: 3px 8px; font-size: 12px; }
     #dnai-panel button:disabled { opacity: .5; cursor: default; }
     #dnai-status { margin: 6px 0; min-height: 18px; color: #9ca3af; word-break: break-all; }
     #dnai-results { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -319,7 +368,11 @@
     #dnai-results details { margin-top: 4px; }
     #dnai-results summary { cursor: pointer; color: #93c5fd; }
     #dnai-results .prompt { font-size: 11px; color: #cbd5e1; word-break: break-word; white-space: pre-wrap; }
-    #dnai-results .label { font-size: 11px; color: #9ca3af; margin-top: 2px; }
+    #dnai-results .label { font-size: 11px; color: #9ca3af; margin-top: 2px; display: flex; align-items: center; gap: 6px; }
+    #dnai-results .label .copy {
+      margin-left: auto; background: #2a3140; color: #93c5fd; border: 0; border-radius: 4px;
+      padding: 1px 6px; font-size: 11px; cursor: pointer;
+    }
   `);
 
   let running = false;
@@ -335,6 +388,13 @@
       <div id="dnai-head"><b>🎨 Danbooru → NovelAI</b><span id="dnai-toggle">▾</span></div>
       <div id="dnai-body">
         <div class="row">
+          <label>ベース<select id="dnai-base"></select></label>
+          <button id="dnai-base-new" class="sec mini">＋新規</button>
+          <button id="dnai-base-del" class="sec mini">🗑</button>
+        </div>
+        <textarea id="dnai-base-text" spellcheck="false"></textarea>
+        <div class="hint">固定の型(絵柄・品質・artist等)。被写体タグは <code>{tags}</code> 位置に差し込み（無ければ末尾に追記）</div>
+        <div class="row">
           <label>モード
             <select id="dnai-mode">
               <option value="iterate">投稿を1件ずつ</option>
@@ -342,6 +402,15 @@
             </select>
           </label>
           <label>件数<input type="number" id="dnai-limit" min="1" max="100"></label>
+        </div>
+        <div class="row">
+          <label>被写体タグ
+            <select id="dnai-scope">
+              <option value="both">character + general</option>
+              <option value="character">characterのみ</option>
+              <option value="general">generalのみ</option>
+            </select>
+          </label>
         </div>
         <div class="row">
           <label><input type="checkbox" id="dnai-dry"> 生成せずタグ抽出のみ (dry run)</label>
@@ -378,7 +447,18 @@
       card.appendChild(a);
     }
     const lab = el(`<div class="label"></div>`);
-    lab.textContent = label || '';
+    lab.append(label || '');
+    const copyBtn = el(`<button class="copy" title="プロンプトをコピー">📋</button>`);
+    copyBtn.addEventListener('click', () => {
+      const done = () => { copyBtn.textContent = '✓'; setTimeout(() => (copyBtn.textContent = '📋'), 1000); };
+      if (typeof GM_setClipboard === 'function') {
+        GM_setClipboard(prompt, 'text');
+        done();
+      } else if (navigator.clipboard) {
+        navigator.clipboard.writeText(prompt).then(done, () => (copyBtn.textContent = '×'));
+      }
+    });
+    lab.appendChild(copyBtn);
     card.appendChild(lab);
     // dry runはタグを見るのが目的なので最初から開いておく
     const det = el(
@@ -448,14 +528,14 @@
         }
         const pool = new Map();
         posts.forEach((p) =>
-          extractTags(p).all.forEach((t) => pool.set(t, (pool.get(t) || 0) + 1))
+          scopedTags(p).forEach((t) => pool.set(t, (pool.get(t) || 0) + 1))
         );
         const tags = shuffle([...pool.keys()]).slice(0, Number(cfg('shuffleCount')));
         if (!dry) setStatus('生成中: shuffle ...');
         await generateAndShow(tags, 'shuffle');
       } else {
         // iterateで生成する投稿（タグありのみ）を先に確定させてからAnlas確認
-        const targets = posts.filter((p) => extractTags(p).all.length);
+        const targets = posts.filter((p) => scopedTags(p).length);
         if (!dry && targets.length) {
           if (!confirm(`NovelAIで最大${targets.length}枚生成します（${targets.length}回Anlas消費）。続行しますか？`)) {
             setStatus('キャンセルしました');
@@ -467,7 +547,7 @@
           if (!running) break;
           const label = `post #${post.id} (${done + 1}/${targets.length})`;
           if (!dry) setStatus(`生成中: ${label} ...`);
-          await generateAndShow(extractTags(post).all, label);
+          await generateAndShow(scopedTags(post), label);
           done++;
           if (!running) break;
           if (!dry) await sleep(Number(cfg('delayMs')));
@@ -505,6 +585,31 @@
   function syncControls() {
     $('#dnai-mode').value = cfg('mode');
     $('#dnai-limit').value = cfg('searchLimit');
+    $('#dnai-scope').value = cfg('tagScope');
+    syncBaseControls();
+  }
+
+  // ベースプリセットのドロップダウン＋テキストエリアを現在状態に同期
+  function syncBaseControls() {
+    const presets = getPresets();
+    const active = getActivePresetName();
+    const sel = $('#dnai-base');
+    sel.textContent = '';
+    Object.keys(presets).forEach((name) => {
+      const o = el(`<option></option>`);
+      o.value = name;
+      o.textContent = name;
+      sel.appendChild(o);
+    });
+    sel.value = active;
+    $('#dnai-base-text').value = presets[active] || '';
+  }
+
+  // テキストエリアの中身を現在のプリセットに保存
+  function saveBaseText() {
+    const presets = getPresets();
+    presets[getActivePresetName()] = $('#dnai-base-text').value;
+    setPresets(presets);
   }
 
   // イベント
@@ -523,9 +628,40 @@
   });
   $('#dnai-settings').addEventListener('click', openSettingsEditor);
   $('#dnai-mode').addEventListener('change', (e) => setCfg('mode', e.target.value));
+  $('#dnai-scope').addEventListener('change', (e) => setCfg('tagScope', e.target.value));
   $('#dnai-limit').addEventListener('change', (e) =>
     setCfg('searchLimit', Number(e.target.value) || DEFAULTS.searchLimit)
   );
+
+  // ベースプリセット
+  $('#dnai-base').addEventListener('change', (e) => {
+    setActivePresetName(e.target.value);
+    $('#dnai-base-text').value = getPresets()[e.target.value] || '';
+  });
+  $('#dnai-base-text').addEventListener('change', saveBaseText);
+  $('#dnai-base-new').addEventListener('click', () => {
+    const name = (prompt('新しいベースプリセット名') || '').trim();
+    if (!name) return;
+    const presets = getPresets();
+    if (!(name in presets)) presets[name] = '{tags}';
+    setPresets(presets);
+    setActivePresetName(name);
+    syncBaseControls();
+  });
+  $('#dnai-base-del').addEventListener('click', () => {
+    const presets = getPresets();
+    const names = Object.keys(presets);
+    if (names.length <= 1) {
+      alert('最後の1件は削除できません');
+      return;
+    }
+    const active = getActivePresetName();
+    if (!confirm(`ベース「${active}」を削除しますか？`)) return;
+    delete presets[active];
+    setPresets(presets);
+    setActivePresetName(Object.keys(presets)[0]);
+    syncBaseControls();
+  });
 
   document.body.appendChild(panel);
   syncControls();

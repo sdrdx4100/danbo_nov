@@ -1,14 +1,23 @@
 # Danbooru → NovelAI userscript
 
-Danbooru の検索結果から **general + character** タグだけを抜き出し、NovelAI (V4.5) で画像を自動生成する Tampermonkey ユーザースクリプトです。スマホ (Kiwi / Firefox + Tampermonkey) で完結します。
+Danbooru の検索結果から **general + character** タグだけを「被写体」として抜き出し、**固定したベースの型（絵柄・品質・アーティスト）**に差し込んで NovelAI (V4.5) で画像を自動生成する Tampermonkey ユーザースクリプトです。スマホ (Kiwi / Firefox + Tampermonkey) で完結します。
+
+NovelAI の「チャンク」（ベースプロンプト＋アーティストタグを保存して呼び出す機能）をスクリプト側の **ベースプリセット** として持ち、Danbooru/Gelbooru から拾った被写体タグだけを差し替えて回す、という運用を自動化したものです。
 
 `GM_xmlhttpRequest` で Danbooru / NovelAI の両方を叩くので CORS に引っかかりません。トークンは `GM_setValue` に保存し、コードには載せません。
+
+## 考え方：固定の型 × 可変の被写体
+
+- **固定（型）** = ベースプリセット。絵柄・品質・アーティストなど、毎回同じにしたい部分。`{tags}` が被写体の差し込み位置。
+- **可変（被写体）** = Danbooru の `tag_string_character` + `tag_string_general`。投稿ごとに変わる部分。
+
+→ 「同じ絵柄・品質でいろんな被写体を回す」のが速くなります。
 
 ## パイプライン (4段)
 
 1. **検索** — Danbooru `posts.json?tags=<検索ワード> order:random` で投稿リストを取得
-2. **タグ抽出** — `tag_string_general` + `tag_string_character` のみ結合（artist / copyright / meta は捨てる）
-3. **プロンプト組み立て** — underscore→space 変換・括弧エスケープ・quality サフィックス付与
+2. **タグ抽出** — `tag_string_general` + `tag_string_character` のみ結合（artist / copyright / meta は捨てる。被写体タグのスコープは切替可）
+3. **プロンプト組み立て** — 被写体タグを underscore→space 変換・括弧エスケープし、ベースプリセットの `{tags}` 位置に差し込み（無ければ末尾に追記）
 4. **生成** — `image.novelai.net/ai/generate-image` に POST → 返ってきた **ZIP** を展開して中の PNG を表示
 
 ## インストール
@@ -28,10 +37,18 @@ Tampermonkey のメニュー（パズルピース → スクリプト名）か�
 ## 使い方
 
 1. Danbooru で普通にタグ検索する（例: `https://danbooru.donmai.us/posts?tags=1girl`）
-2. 右下のパネルでモードを選ぶ
+2. **ベース**（型）を用意する
+   - パネル上部の **ベース** ドロップダウンでプリセットを選択。テキストエリアで中身を編集（自動保存）
+   - 別の型を保存したいときは **＋新規** で名前を付けて作成、**🗑** で削除
+   - 例: `artist:wlop, very aesthetic, best quality, amazing quality, {tags}`
+   - `{tags}` の位置に被写体タグが入ります（`{tags}` を書かなければ末尾に追記）
+3. **被写体タグ** のスコープを選ぶ（`character + general` / `characterのみ` / `generalのみ`）
+4. **モード** を選ぶ
    - **投稿を1件ずつ** — 検索結果を1件ずつ回して生成（`delayMs` 間隔）
    - **タグをシャッフル合成** — 結果全体のタグをシャッフルして N 個で1枚生成
-3. **▶ 生成開始**
+5. **▶ 生成開始**
+
+各結果カードの **📋** でそのプロンプトをコピーできます（NovelAI の UI に手で貼る運用にも対応）。
 
 検索URLに `tags` が無いページでは、実行時に検索ワードを聞きます。
 
@@ -51,7 +68,8 @@ Tampermonkey のメニュー（パズルピース → スクリプト名）か�
 - NovelAI は生成ごとに **Anlas** を消費します（基本解像度は無料枠あり）。`iterate` モードで件数を大きくすると一気に消費するので注意。
 - レスポンスは画像ではなく **ZIP**。本スクリプトは中央ディレクトリを読んで STORED / DEFLATE 両対応で PNG を展開します（`DecompressionStream` 対応ブラウザが必要）。
 - 既定モデルは `nai-diffusion-4-5-full`。Curated を使うなら設定JSONで `nai-diffusion-4-5-curated` に変更。
-- 画風 (artist) / キャラ精度 (copyright) を足したくなったら、設定JSONの `qualitySuffix` に手で書き足すか、`extractTags` を拡張してください（今は general + character のみ）。
+- 画風 (artist) / 品質を固定したいときは、**ベースプリセット** にそのまま書きます（`artist:xxx, best quality, ... , {tags}`）。被写体だけ Danbooru から差し替わります。
+- ベースプリセットは `GM_setValue('base_presets', {...})` に保存されます。
 
 ## 設定キー
 
@@ -63,9 +81,11 @@ Tampermonkey のメニュー（パズルピース → スクリプト名）か�
 | `steps` | `28` | ステップ数 |
 | `scale` | `5` | CFG scale |
 | `sampler` | `k_euler_ancestral` | サンプラー |
-| `qualitySuffix` | `best quality, ...` | プロンプト末尾に付与する品質タグ |
 | `negative` | `lowres, ...` | ネガティブプロンプト |
 | `searchLimit` | `20` | Danbooru取得件数 |
 | `mode` | `iterate` | `iterate` / `shuffle` |
 | `shuffleCount` | `14` | shuffle時のタグ数 |
 | `delayMs` | `2000` | iterate時の生成間隔(ms) |
+| `tagScope` | `both` | 被写体タグ範囲 `both` / `character` / `general` |
+
+※ ベースプリセット（型）は設定JSONとは別に **パネル上部のベース欄** で管理します。
