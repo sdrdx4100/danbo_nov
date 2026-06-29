@@ -42,20 +42,31 @@ Tampermonkey のメニュー（パズルピース → スクリプト名）か�
 1. Danbooru で普通にタグ検索する（例: `https://danbooru.donmai.us/posts?tags=1girl`）
    - パネルは Danbooru ページ上で動きます。**ソース** を Gelbooru にすると、検索ワードはそのまま Gelbooru API に投げられます
 2. **ソース** を選ぶ（Danbooru / Gelbooru）
-3. **ベース**（型）を用意する
+3. （任意）**検索ボックス** にタグを打つと候補が出る（タグ補完）
+   - カテゴリ別に色分け（青=general / 緑=character / 紫=copyright / 赤=artist / 橙=meta）＋投稿数を表示
+   - クリックで挿入。複数タグはスペース区切り。Enterでそのまま生成開始
+   - 空のままなら、開いている Danbooru ページの `tags` を使います
+4. **ベース**（型）を用意する
    - パネル上部の **ベース** ドロップダウンでプリセットを選択。テキストエリアで中身を編集（自動保存）
    - 別の型を保存したいときは **＋新規** で名前を付けて作成、**🗑** で削除
    - 例: `artist:wlop, very aesthetic, best quality, amazing quality, {tags}`
    - `{tags}` の位置に被写体タグが入ります（`{tags}` を書かなければ末尾に追記）
-4. **被写体タグ** のスコープを選ぶ（`character + general` / `characterのみ` / `generalのみ`）
-5. **モード** を選ぶ
+5. **被写体タグ** のスコープを選ぶ（`character + general` / `characterのみ` / `generalのみ`）
+6. **モード** を選ぶ
    - **投稿を1件ずつ** — 検索結果を1件ずつ回して生成（`delayMs` 間隔）
    - **タグをシャッフル合成** — 結果全体のタグをシャッフルして N 個で1枚生成
-6. **▶ 生成開始**
+7. **▶ 生成開始**
 
 各結果カードの **📋** でそのプロンプトをコピーできます（NovelAI の UI に手で貼る運用にも対応）。
 
-検索URLに `tags` が無いページでは、実行時に検索ワードを聞きます。
+検索ボックスが空で、かつ開いているページに `tags` も無い場合は、実行時に検索ワードを聞きます。
+
+### 検索候補（タグ補完）は rating を区別しない
+
+タグ自体には rating（safe/nsfw）が無く、補完 API（Danbooru `autocomplete.json` / Gelbooru `autocomplete2`）も rating でフィルタしません。よって候補は **normal / nsfw 区別なく全部** 出ます。フルに出すための注意：
+
+- `safebooru.donmai.us` ではなく `danbooru.donmai.us` を使う（このスクリプトは後者）。
+- Danbooru にログイン認証を入れていて **アカウントの Safe Mode が ON** だと、候補ではなく **投稿(post)検索** 側が safe に絞られることがあります。フルにしたいなら認証を外すか Safe Mode を OFF に。
 
 ### まずは dry run
 

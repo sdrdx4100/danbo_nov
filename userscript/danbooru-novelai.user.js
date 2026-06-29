@@ -401,8 +401,56 @@
   // 検索ワードの取得（現在のDanbooru検索URLから / 無ければ入力を促す）
   // ---------------------------------------------------------------------------
   function getSearchTags() {
+    // パネルの検索ボックス優先、無ければDanbooruページURLの tags
+    const box = $('#dnai-search');
+    const boxVal = box && box.value.trim();
+    if (boxVal) return boxVal;
     const t = new URL(location.href).searchParams.get('tags') || '';
     return t.trim();
+  }
+
+  // ---------------------------------------------------------------------------
+  // 検索候補（タグ補完）: rating(safe/nsfw)無区別で全カテゴリ返す
+  //   Danbooru: autocomplete.json / Gelbooru: page=autocomplete2
+  // ---------------------------------------------------------------------------
+  async function autocompleteTags(term) {
+    if (!term) return [];
+    if (cfg('source') === 'gelbooru') {
+      const url =
+        'https://gelbooru.com/index.php?page=autocomplete2&type=tag_query&limit=12&term=' +
+        encodeURIComponent(term) + gelbooruCreds();
+      const r = await gmRequest({ url, headers: { Accept: 'application/json' } });
+      const data = JSON.parse(r.responseText);
+      return (Array.isArray(data) ? data : []).map((d) => ({
+        value: d.value || d.label,
+        category: Number(d.category),
+        count: Number(d.post_count) || 0,
+      }));
+    }
+    let url =
+      'https://danbooru.donmai.us/autocomplete.json?search[type]=tag_query&limit=12' +
+      '&search[query]=' + encodeURIComponent(term);
+    const login = GM_getValue('danbooru_login', '');
+    const apiKey = GM_getValue('danbooru_api_key', '');
+    if (login && apiKey) {
+      url += '&login=' + encodeURIComponent(login) + '&api_key=' + encodeURIComponent(apiKey);
+    }
+    const r = await gmRequest({ url, headers: { Accept: 'application/json' } });
+    const data = JSON.parse(r.responseText);
+    return (Array.isArray(data) ? data : []).map((d) => ({
+      value: d.value,
+      category: Number(d.category),
+      count: Number(d.post_count) || 0,
+    }));
+  }
+
+  // カテゴリ別の色（Danbooru慣習: general/artist/copyright/character/meta）
+  const CATEGORY_COLOR = { 0: '#93c5fd', 1: '#f87171', 3: '#e879f9', 4: '#4ade80', 5: '#fb923c' };
+
+  function compactCount(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(n);
   }
 
   // ---------------------------------------------------------------------------
@@ -435,6 +483,23 @@
       padding: 5px 7px; font: 12px/1.4 ui-monospace, monospace;
     }
     #dnai-panel .hint { font-size: 11px; color: #6b7280; margin: 2px 0 6px; }
+    #dnai-search-wrap { position: relative; margin-bottom: 8px; }
+    #dnai-search {
+      width: 100%; box-sizing: border-box; background: #11151c; color: #e6e6e6;
+      border: 1px solid #3a4150; border-radius: 6px; padding: 5px 7px; font: 13px system-ui, sans-serif;
+    }
+    #dnai-suggest {
+      position: absolute; left: 0; right: 0; top: 100%; z-index: 5; margin-top: 2px;
+      background: #11151c; border: 1px solid #3a4150; border-radius: 6px; overflow: hidden;
+      max-height: 240px; overflow-y: auto; display: none;
+    }
+    #dnai-suggest.open { display: block; }
+    #dnai-suggest .item {
+      display: flex; align-items: baseline; gap: 6px; padding: 5px 8px; cursor: pointer;
+    }
+    #dnai-suggest .item:hover, #dnai-suggest .item.active { background: #2a3140; }
+    #dnai-suggest .item .name { flex: 1; word-break: break-all; }
+    #dnai-suggest .item .cnt { font-size: 11px; color: #6b7280; }
     #dnai-panel button {
       background: #3b82f6; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px;
       cursor: pointer; font-size: 13px;
@@ -476,6 +541,11 @@
               <option value="gelbooru">Gelbooru</option>
             </select>
           </label>
+        </div>
+        <div id="dnai-search-wrap">
+          <input type="text" id="dnai-search" autocomplete="off" spellcheck="false"
+                 placeholder="検索タグ（空ならページのtagsを使用）">
+          <div id="dnai-suggest"></div>
         </div>
         <div class="row">
           <label>ベース<select id="dnai-base"></select></label>
@@ -716,7 +786,67 @@
     setStatus('');
   });
   $('#dnai-settings').addEventListener('click', openSettingsEditor);
-  $('#dnai-source').addEventListener('change', (e) => setCfg('source', e.target.value));
+  $('#dnai-source').addEventListener('change', (e) => {
+    setCfg('source', e.target.value);
+    hideSuggest();
+  });
+
+  // --- 検索候補（タグ補完）-------------------------------------------------
+  const suggestBox = $('#dnai-suggest');
+  const searchInput = $('#dnai-search');
+  let acTimer = null;
+  let acSeq = 0;
+
+  const lastToken = (s) => s.split(/\s+/).pop();
+
+  function hideSuggest() {
+    suggestBox.classList.remove('open');
+    suggestBox.textContent = '';
+  }
+
+  function renderSuggest(items) {
+    suggestBox.textContent = '';
+    if (!items.length) return hideSuggest();
+    items.forEach((it) => {
+      const row = el(`<div class="item"><span class="name"></span><span class="cnt"></span></div>`);
+      const name = row.querySelector('.name');
+      name.textContent = it.value;
+      name.style.color = CATEGORY_COLOR[it.category] || '#e6e6e6';
+      row.querySelector('.cnt').textContent = compactCount(it.count);
+      row.addEventListener('mousedown', (ev) => {
+        ev.preventDefault(); // blur前に確定
+        const parts = searchInput.value.split(/\s+/);
+        parts[parts.length - 1] = it.value;
+        searchInput.value = parts.join(' ') + ' ';
+        hideSuggest();
+        searchInput.focus();
+      });
+      suggestBox.appendChild(row);
+    });
+    suggestBox.classList.add('open');
+  }
+
+  searchInput.addEventListener('input', () => {
+    clearTimeout(acTimer);
+    const token = lastToken(searchInput.value).trim();
+    if (token.length < 1) return hideSuggest();
+    const seq = ++acSeq;
+    acTimer = setTimeout(async () => {
+      try {
+        const items = await autocompleteTags(token);
+        if (seq === acSeq) renderSuggest(items); // 古い応答は無視
+      } catch (e) {
+        console.warn('[D→NAI] autocomplete失敗:', e.message);
+        hideSuggest();
+      }
+    }, 250);
+  });
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideSuggest();
+    if (e.key === 'Enter') { hideSuggest(); run(); }
+  });
+  searchInput.addEventListener('blur', () => setTimeout(hideSuggest, 150));
+
   $('#dnai-mode').addEventListener('change', (e) => setCfg('mode', e.target.value));
   $('#dnai-scope').addEventListener('change', (e) => setCfg('tagScope', e.target.value));
   $('#dnai-limit').addEventListener('change', (e) =>
