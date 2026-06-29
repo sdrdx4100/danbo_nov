@@ -6,6 +6,7 @@
 // @author       sdrdx4100
 // @match        https://danbooru.donmai.us/*
 // @connect      danbooru.donmai.us
+// @connect      gelbooru.com
 // @connect      image.novelai.net
 // @connect      novelai.net
 // @grant        GM_xmlhttpRequest
@@ -36,6 +37,7 @@
   // 設定 (GM_setValue に保存。コードにベタ書きしない)
   // ---------------------------------------------------------------------------
   const DEFAULTS = {
+    source: 'danbooru', // 'danbooru' / 'gelbooru'
     naiEndpoint: 'https://image.novelai.net/ai/generate-image',
     model: 'nai-diffusion-4-5-full', // curated を使うなら 'nai-diffusion-4-5-curated'
     width: 832,
@@ -127,48 +129,128 @@
   }
 
   // ---------------------------------------------------------------------------
-  // ① Danbooru: 投稿リスト取得
+  // ① + ② 取得 & タグ抽出（ソース抽象化）
+  //    各ソースは投稿を {id, character:[], general:[]} に正規化して返す。
+  //    被写体タグだけを取り出す（artist/copyright/meta は捨てる）。
+  //    絵柄/品質/アーティストはベースプリセット側で固定する。
   // ---------------------------------------------------------------------------
-  async function fetchPosts(tags, limit) {
+  const splitTags = (s) => (s || '').split(/\s+/).filter(Boolean);
+
+  // Danbooru: posts.json が最初からカテゴリ別フィールドを返すので分類は不要
+  async function fetchDanbooru(searchTags, limit) {
+    const query = /\border:/.test(searchTags) ? searchTags : `${searchTags} order:random`;
     let url =
       'https://danbooru.donmai.us/posts.json?tags=' +
-      encodeURIComponent(tags) +
-      '&limit=' +
-      encodeURIComponent(limit);
-
+      encodeURIComponent(query) + '&limit=' + encodeURIComponent(limit);
     const login = GM_getValue('danbooru_login', '');
     const apiKey = GM_getValue('danbooru_api_key', '');
     if (login && apiKey) {
       url += '&login=' + encodeURIComponent(login) + '&api_key=' + encodeURIComponent(apiKey);
     }
-
     const r = await gmRequest({ url, headers: { Accept: 'application/json' } });
     const data = JSON.parse(r.responseText);
-    return Array.isArray(data) ? data : [];
+    const posts = Array.isArray(data) ? data : [];
+    return posts.map((p) => ({
+      id: p.id,
+      character: splitTags(p.tag_string_character),
+      general: splitTags(p.tag_string_general),
+    }));
   }
 
-  // ---------------------------------------------------------------------------
-  // ② タグ抽出: general + character のみ (artist/copyright/meta は捨てる)
-  //    被写体タグだけを取り出す。絵柄/品質/アーティストはベースプリセット側で固定。
-  // ---------------------------------------------------------------------------
-  function extractTags(post) {
-    const split = (s) => (s || '').split(/\s+/).filter(Boolean);
-    const general = split(post.tag_string_general);
-    const character = split(post.tag_string_character);
-    // character(被写体)を先に、general(描写)を後に
-    return { general, character, all: [...character, ...general] };
+  // Gelbooru: posts は tags が1本の文字列。s=tag API で type を引いて分類する。
+  //   type: 0=general, 1=artist, 3=copyright, 4=character, 5=metadata
+  const GELBOORU_META_FALLBACK = new Set([
+    'highres', 'absurdres', 'lowres', 'commentary', 'commentary_request',
+    'translated', 'translation_request', 'bad_id', 'bad_pixiv_id', 'tagme',
+  ]);
+
+  function gelbooruCreds() {
+    const apiKey = GM_getValue('gelbooru_api_key', '');
+    const userId = GM_getValue('gelbooru_user_id', '');
+    return apiKey && userId
+      ? `&api_key=${encodeURIComponent(apiKey)}&user_id=${encodeURIComponent(userId)}`
+      : '';
   }
 
-  // tagScope に応じて被写体タグを選ぶ
-  function scopedTags(post) {
-    const t = extractTags(post);
+  async function gelbooruClassify(tagNames) {
+    // names= に空白区切りでまとめて問い合わせ（長すぎ防止に分割）
+    const map = new Map();
+    const creds = gelbooruCreds();
+    const CHUNK = 80;
+    for (let i = 0; i < tagNames.length; i += CHUNK) {
+      const chunk = tagNames.slice(i, i + CHUNK);
+      const url =
+        'https://gelbooru.com/index.php?page=dapi&s=tag&q=index&json=1&limit=' +
+        chunk.length + '&names=' + encodeURIComponent(chunk.join(' ')) + creds;
+      try {
+        const r = await gmRequest({ url, headers: { Accept: 'application/json' } });
+        const data = JSON.parse(r.responseText);
+        const tags = Array.isArray(data) ? data : data.tag || [];
+        tags.forEach((t) => map.set(t.name, Number(t.type)));
+      } catch (e) {
+        console.warn('[D→NAI] Gelbooru tag分類に失敗:', e.message);
+      }
+    }
+    return map;
+  }
+
+  async function fetchGelbooru(searchTags, limit) {
+    const query = /\bsort:/.test(searchTags) ? searchTags : `${searchTags} sort:random`;
+    const url =
+      'https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=' +
+      encodeURIComponent(limit) + '&tags=' + encodeURIComponent(query) + gelbooruCreds();
+    const r = await gmRequest({ url, headers: { Accept: 'application/json' } });
+    const data = JSON.parse(r.responseText);
+    const posts = Array.isArray(data) ? data : data.post || [];
+
+    // 全投稿のユニークタグを集めて1回（〜数回）で分類
+    const uniq = [...new Set(posts.flatMap((p) => splitTags(p.tags)))];
+    const typeMap = await gelbooruClassify(uniq);
+
+    return posts.map((p) => {
+      const all = splitTags(p.tags);
+      const character = [];
+      const general = [];
+      let classified = false;
+      all.forEach((t) => {
+        const ty = typeMap.get(t);
+        if (ty === undefined) return; // 未分類は後でフォールバック判定
+        classified = true;
+        if (ty === 4) character.push(t);
+        else if (ty === 0) general.push(t);
+        // 1=artist / 3=copyright / 5=meta は捨てる
+      });
+      // 分類が全く効かなかった場合（認証なし等）は素のタグ-メタ で代用
+      if (!classified) {
+        return {
+          id: p.id,
+          character: [],
+          general: all.filter((t) => !GELBOORU_META_FALLBACK.has(t)),
+        };
+      }
+      return { id: p.id, character, general };
+    });
+  }
+
+  const SOURCES = {
+    danbooru: { label: 'Danbooru', fetch: fetchDanbooru },
+    gelbooru: { label: 'Gelbooru', fetch: fetchGelbooru },
+  };
+
+  function fetchSubjects(searchTags, limit) {
+    const src = SOURCES[cfg('source')] || SOURCES.danbooru;
+    return src.fetch(searchTags, limit);
+  }
+
+  // tagScope に応じて被写体タグを選ぶ（item = {character, general}）
+  function scopedTags(item) {
     switch (cfg('tagScope')) {
       case 'character':
-        return t.character;
+        return item.character;
       case 'general':
-        return t.general;
+        return item.general;
       default:
-        return t.all;
+        return [...item.character, ...item.general];
     }
   }
 
@@ -388,6 +470,14 @@
       <div id="dnai-head"><b>🎨 Danbooru → NovelAI</b><span id="dnai-toggle">▾</span></div>
       <div id="dnai-body">
         <div class="row">
+          <label>ソース
+            <select id="dnai-source">
+              <option value="danbooru">Danbooru</option>
+              <option value="gelbooru">Gelbooru</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
           <label>ベース<select id="dnai-base"></select></label>
           <button id="dnai-base-new" class="sec mini">＋新規</button>
           <button id="dnai-base-del" class="sec mini">🗑</button>
@@ -501,25 +591,23 @@
     setRunning(true);
     clearResults();
     try {
+      const srcLabel = (SOURCES[cfg('source')] || SOURCES.danbooru).label;
       let searchTags = getSearchTags();
       if (!searchTags) {
-        searchTags = (prompt('Danbooru検索ワード（例: 1girl）') || '').trim();
+        searchTags = (prompt(`${srcLabel}検索ワード（例: 1girl）`) || '').trim();
         if (!searchTags) {
           setStatus('検索ワードがありません');
           return;
         }
       }
-      const searchQuery = /\border:/.test(searchTags)
-        ? searchTags
-        : `${searchTags} order:random`;
 
-      setStatus(`Danbooru検索中: ${searchTags} ...`);
-      const posts = await fetchPosts(searchQuery, Number(cfg('searchLimit')));
+      setStatus(`${srcLabel}検索中: ${searchTags} ...`);
+      const posts = await fetchSubjects(searchTags, Number(cfg('searchLimit')));
       if (!posts.length) {
         setStatus('投稿が見つかりませんでした');
         return;
       }
-      console.log(`[D→NAI] ${posts.length}件取得`);
+      console.log(`[D→NAI] ${srcLabel} ${posts.length}件取得`);
 
       if (cfg('mode') === 'shuffle') {
         if (!dry && !confirm('NovelAIで1枚生成します（Anlasを消費）。続行しますか？')) {
@@ -583,6 +671,7 @@
   }
 
   function syncControls() {
+    $('#dnai-source').value = cfg('source');
     $('#dnai-mode').value = cfg('mode');
     $('#dnai-limit').value = cfg('searchLimit');
     $('#dnai-scope').value = cfg('tagScope');
@@ -627,6 +716,7 @@
     setStatus('');
   });
   $('#dnai-settings').addEventListener('click', openSettingsEditor);
+  $('#dnai-source').addEventListener('change', (e) => setCfg('source', e.target.value));
   $('#dnai-mode').addEventListener('change', (e) => setCfg('mode', e.target.value));
   $('#dnai-scope').addEventListener('change', (e) => setCfg('tagScope', e.target.value));
   $('#dnai-limit').addEventListener('change', (e) =>
@@ -682,6 +772,15 @@
     GM_setValue('danbooru_login', login.trim());
     GM_setValue('danbooru_api_key', key.trim());
     setStatus('Danbooru認証を保存しました');
+  });
+  GM_registerMenuCommand('Gelbooru認証を設定 (api_key / user_id)', () => {
+    const key = prompt('Gelbooru api_key', GM_getValue('gelbooru_api_key', ''));
+    if (key == null) return;
+    const uid = prompt('Gelbooru user_id', GM_getValue('gelbooru_user_id', ''));
+    if (uid == null) return;
+    GM_setValue('gelbooru_api_key', key.trim());
+    GM_setValue('gelbooru_user_id', uid.trim());
+    setStatus('Gelbooru認証を保存しました');
   });
   GM_registerMenuCommand('生成パラメータを編集 (JSON)', openSettingsEditor);
 })();
