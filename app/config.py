@@ -14,6 +14,8 @@ STATIC_DIR.mkdir(exist_ok=True)
 NAI_TOKEN: str = os.getenv("NAI_TOKEN", "")
 DANBOORU_LOGIN: str = os.getenv("DANBOORU_LOGIN", "")
 DANBOORU_API_KEY: str = os.getenv("DANBOORU_API_KEY", "")
+GELBOORU_API_KEY: str = os.getenv("GELBOORU_API_KEY", "")
+GELBOORU_USER_ID: str = os.getenv("GELBOORU_USER_ID", "")
 
 DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./danbo_nov.db")
 OPTUNA_STUDY_NAME: str = os.getenv("OPTUNA_STUDY_NAME", "prompt_optimization")
@@ -22,7 +24,7 @@ HOST: str = os.getenv("HOST", "0.0.0.0")
 PORT: int = int(os.getenv("PORT", "8000"))
 
 # NovelAI image generation defaults
-NAI_MODEL: str = "nai-diffusion-4-curated-preview"
+NAI_MODEL: str = os.getenv("NAI_MODEL", "nai-diffusion-4-5-full")
 NAI_WIDTH: int = 832
 NAI_HEIGHT: int = 1216
 NAI_STEPS: int = 28

@@ -5,7 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import Depends, FastAPI, Form, Query, Request
+from fastapi import Body, Depends, FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import STATIC_DIR
 from app.models import GeneratedImage, get_session, init_db
+from app.services.booru import autocomplete, fetch_subjects
 from app.services.danbooru import sample_tags_for_keyword
 from app.services.novelai import generate_image
 from app.services.optimizer import (
@@ -51,11 +52,18 @@ templates = Jinja2Templates(
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(
+async def studio(request: Request):
+    """Standalone Studio – search booru, build prompt from a fixed base,
+    generate via NovelAI. Self-contained (no userscript / no CORS)."""
+    return templates.TemplateResponse(request=request, name="studio.html", context={})
+
+
+@app.get("/gallery", response_class=HTMLResponse)
+async def gallery(
     request: Request,
     db: AsyncSession = Depends(get_session),
 ):
-    """Main gallery page."""
+    """Gallery of generated/rated images (optimizer flow)."""
     stmt = select(GeneratedImage).order_by(GeneratedImage.id.desc()).limit(50)
     result = await db.execute(stmt)
     images = result.scalars().all()
@@ -156,6 +164,71 @@ async def api_generate(
             "negative_prompt": negative,
             "tags": selected_tags,
             "trial": trial_number,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Studio API (standalone pipeline)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/autocomplete")
+async def api_autocomplete(
+    q: str = Query(""),
+    source: str = Query("danbooru"),
+):
+    """Tag suggestions (rating-agnostic) for the Studio search box."""
+    items = await autocomplete(source, q.strip())
+    return JSONResponse({"items": items})
+
+
+@app.get("/api/subjects")
+async def api_subjects(
+    tags: str = Query(""),
+    source: str = Query("danbooru"),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Fetch posts and return normalised {id, character[], general[]} items."""
+    items = await fetch_subjects(source, tags.strip(), limit)
+    return JSONResponse({"source": source, "count": len(items), "items": items})
+
+
+@app.post("/api/studio/generate")
+async def api_studio_generate(
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_session),
+):
+    """Generate one image from a pre-built prompt and store it."""
+    positive = (payload.get("positive") or "").strip()
+    negative = (payload.get("negative") or "").strip()
+    tags = payload.get("tags") or []
+    if not positive:
+        return JSONResponse({"error": "positive prompt is empty"}, status_code=400)
+
+    filename = await generate_image(positive, negative)
+    if filename is None:
+        return JSONResponse(
+            {"error": "Image generation failed. Check NAI_TOKEN and API status."},
+            status_code=502,
+        )
+
+    record = GeneratedImage(
+        positive_prompt=positive,
+        negative_prompt=negative,
+        image_path=filename,
+        tags_json=json.dumps(tags),
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+
+    return JSONResponse(
+        {
+            "id": record.id,
+            "image_url": f"/static/{filename}",
+            "positive_prompt": positive,
+            "negative_prompt": negative,
         }
     )
 

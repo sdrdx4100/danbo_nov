@@ -6,12 +6,14 @@
   <title>{% block title %}Danbo Nov{% endblock %}</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            brand: { 50:'#f0f9ff', 100:'#e0f2fe', 500:'#0ea5e9', 600:'#0284c7', 700:'#0369a1' }
+    if (window.tailwind) {
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              brand: { 50:'#f0f9ff', 100:'#e0f2fe', 500:'#0ea5e9', 600:'#0284c7', 700:'#0369a1' }
+            }
           }
         }
       }
@@ -35,7 +37,11 @@
         Danbo Nov
       </a>
       <div class="flex gap-4 items-center">
-        <a href="/" class="hover:text-brand-500 transition-colors {% block nav_home %}{% endblock %}">
+        <a href="/" class="hover:text-brand-500 transition-colors {% block nav_studio %}{% endblock %}">
+          <svg class="w-5 h-5 inline mr-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
+          Studio
+        </a>
+        <a href="/gallery" class="hover:text-brand-500 transition-colors {% block nav_home %}{% endblock %}">
           <svg class="w-5 h-5 inline mr-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           Gallery
         </a>

@@ -53,6 +53,7 @@ async def generate_image(
         "model": NAI_MODEL,
         "action": "generate",
         "parameters": {
+            "params_version": 3,
             "width": width,
             "height": height,
             "scale": cfg_scale,
@@ -60,13 +61,29 @@ async def generate_image(
             "steps": steps,
             "seed": seed,
             "n_samples": 1,
-            "negative_prompt": negative_prompt,
             "ucPreset": 0,
             "qualityToggle": True,
-            "sm": False,
-            "sm_dyn": False,
+            "autoSmea": False,
             "dynamic_thresholding": False,
-            "noise_schedule": "native",
+            "controlnet_strength": 1,
+            "legacy": False,
+            "add_original_image": True,
+            "cfg_rescale": 0,
+            "noise_schedule": "karras",
+            "legacy_v3_extend": False,
+            "negative_prompt": negative_prompt,
+            # V4/V4.5 prompt structure (character_prompts left empty for now)
+            "characterPrompts": [],
+            "v4_prompt": {
+                "caption": {"base_caption": positive_prompt, "char_captions": []},
+                "use_coords": False,
+                "use_order": True,
+            },
+            "v4_negative_prompt": {
+                "caption": {"base_caption": negative_prompt, "char_captions": []},
+                "use_coords": False,
+                "use_order": False,
+            },
         },
     }
 

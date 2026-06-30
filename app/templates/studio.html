@@ -1,0 +1,271 @@
+{% extends "base.html" %}
+{% block title %}Studio – Danbo Nov{% endblock %}
+{% block nav_studio %}text-brand-500{% endblock %}
+
+{% block content %}
+<div class="grid lg:grid-cols-[380px_1fr] gap-6">
+  <!-- ── Controls ───────────────────────────────────────────── -->
+  <section class="space-y-4">
+    <h1 class="text-lg font-bold flex items-center gap-2">🎨 Booru → NovelAI Studio</h1>
+    <p class="text-sm text-gray-400">検索 → character+general 抽出 → 固定ベースに差し込み → 生成。全部このページで完結します。</p>
+
+    <!-- source -->
+    <div class="flex items-center gap-2">
+      <label class="text-sm text-gray-400 w-16">ソース</label>
+      <select id="source" class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm">
+        <option value="danbooru">Danbooru</option>
+        <option value="gelbooru">Gelbooru</option>
+      </select>
+    </div>
+
+    <!-- search + autocomplete -->
+    <div class="relative">
+      <label class="text-sm text-gray-400 block mb-1">検索タグ</label>
+      <input id="search" type="text" autocomplete="off" spellcheck="false"
+             placeholder="例: 1girl  (候補はsafe/nsfw区別なし)"
+             class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm" />
+      <div id="suggest" class="hidden absolute left-0 right-0 z-20 mt-1 bg-gray-900 border border-gray-700 rounded max-h-60 overflow-y-auto shadow-xl"></div>
+    </div>
+
+    <!-- base preset -->
+    <div>
+      <div class="flex items-center gap-2 mb-1">
+        <label class="text-sm text-gray-400 w-16">ベース</label>
+        <select id="preset" class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm"></select>
+        <button id="preset-new" class="text-xs bg-gray-700 hover:bg-gray-600 rounded px-2 py-1.5">＋</button>
+        <button id="preset-del" class="text-xs bg-gray-700 hover:bg-gray-600 rounded px-2 py-1.5">🗑</button>
+      </div>
+      <textarea id="base-text" rows="3" spellcheck="false"
+                class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-xs font-mono"></textarea>
+      <p class="text-[11px] text-gray-500 mt-1">固定の型(絵柄・品質・artist等)。被写体は <code>{tags}</code> 位置に差し込み（無ければ末尾）</p>
+    </div>
+
+    <!-- negative (collapsible) -->
+    <details class="text-sm">
+      <summary class="cursor-pointer text-gray-400">ネガティブ / 詳細</summary>
+      <textarea id="negative" rows="2" spellcheck="false"
+                class="w-full mt-2 bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-xs font-mono"></textarea>
+    </details>
+
+    <!-- options -->
+    <div class="grid grid-cols-2 gap-2 text-sm">
+      <label class="flex items-center gap-2">モード
+        <select id="mode" class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1.5">
+          <option value="iterate">1件ずつ</option>
+          <option value="shuffle">シャッフル合成</option>
+        </select>
+      </label>
+      <label class="flex items-center gap-2">件数
+        <input id="limit" type="number" min="1" max="100" value="10"
+               class="w-20 bg-gray-900 border border-gray-700 rounded px-2 py-1.5" />
+      </label>
+      <label class="flex items-center gap-2 col-span-2">被写体タグ
+        <select id="scope" class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1.5">
+          <option value="both">character + general</option>
+          <option value="character">characterのみ</option>
+          <option value="general">generalのみ</option>
+        </select>
+      </label>
+      <label class="flex items-center gap-2 col-span-2">
+        <input id="dry" type="checkbox" class="accent-brand-500" /> 生成せずプロンプトだけ確認 (dry run)
+      </label>
+    </div>
+
+    <!-- actions -->
+    <div class="flex gap-2">
+      <button id="run" class="flex-1 bg-brand-600 hover:bg-brand-500 rounded px-3 py-2 text-sm font-semibold">▶ 生成開始</button>
+      <button id="stop" disabled class="bg-gray-700 rounded px-3 py-2 text-sm disabled:opacity-50">⏹</button>
+      <button id="clear" class="bg-gray-700 hover:bg-gray-600 rounded px-3 py-2 text-sm">🗑</button>
+    </div>
+    <div id="status" class="text-sm text-gray-400 min-h-5 break-all"></div>
+  </section>
+
+  <!-- ── Results ────────────────────────────────────────────── -->
+  <section>
+    <div id="results" class="grid sm:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const LS = {
+    get: (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+    set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
+  };
+
+  const DEFAULT_PRESETS = { 'デフォルト': 'very aesthetic, best quality, amazing quality, absurdres, {tags}' };
+  const DEFAULT_NEGATIVE = 'lowres, worst quality, low quality, bad anatomy, bad hands, jpeg artifacts, signature, watermark, username, blurry, text, error, extra digits';
+  const CAT_COLOR = { 0:'#93c5fd', 1:'#f87171', 3:'#e879f9', 4:'#4ade80', 5:'#fb923c' };
+
+  let presets = LS.get('studio_presets', DEFAULT_PRESETS);
+  let activePreset = LS.get('studio_active', Object.keys(presets)[0]);
+  let running = false;
+
+  // ---- helpers ----
+  const compact = (n) => n >= 1e6 ? (n/1e6).toFixed(1).replace(/\.0$/,'')+'M'
+                       : n >= 1e3 ? (n/1e3).toFixed(1).replace(/\.0$/,'')+'k' : ''+n;
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const shuffle = (a) => { a = a.slice(); for (let i=a.length-1;i>0;i--){const j=(Math.random()*(i+1))|0;[a[i],a[j]]=[a[j],a[i]];} return a; };
+  const tagToNai = (t) => t.replace(/_/g,' ').replace(/([()])/g,'\\$1');
+
+  function baseText() { return presets[activePreset] || '{tags}'; }
+  function buildPrompt(tags) {
+    const body = tags.map(tagToNai).join(', ');
+    const base = baseText().trim();
+    if (!base) return body;
+    if (base.includes('{tags}')) return base.replace(/\{tags\}/g, body);
+    return body ? `${base}, ${body}` : base;
+  }
+  function scopedTags(item) {
+    if ($('scope').value === 'character') return item.character;
+    if ($('scope').value === 'general') return item.general;
+    return [...item.character, ...item.general];
+  }
+
+  // ---- preset UI ----
+  function syncPresets() {
+    const sel = $('preset'); sel.innerHTML = '';
+    Object.keys(presets).forEach(n => { const o = document.createElement('option'); o.value = o.textContent = n; sel.appendChild(o); });
+    if (!(activePreset in presets)) activePreset = Object.keys(presets)[0];
+    sel.value = activePreset;
+    $('base-text').value = presets[activePreset] || '';
+  }
+  $('preset').addEventListener('change', e => { activePreset = e.target.value; LS.set('studio_active', activePreset); $('base-text').value = presets[activePreset] || ''; });
+  $('base-text').addEventListener('change', () => { presets[activePreset] = $('base-text').value; LS.set('studio_presets', presets); });
+  $('preset-new').addEventListener('click', () => {
+    const name = (prompt('新しいベース名') || '').trim(); if (!name) return;
+    if (!(name in presets)) presets[name] = '{tags}';
+    activePreset = name; LS.set('studio_presets', presets); LS.set('studio_active', name); syncPresets();
+  });
+  $('preset-del').addEventListener('click', () => {
+    if (Object.keys(presets).length <= 1) return alert('最後の1件は削除できません');
+    if (!confirm(`「${activePreset}」を削除？`)) return;
+    delete presets[activePreset]; activePreset = Object.keys(presets)[0];
+    LS.set('studio_presets', presets); LS.set('studio_active', activePreset); syncPresets();
+  });
+
+  // ---- autocomplete ----
+  const suggest = $('suggest'); const search = $('search');
+  let acTimer = null, acSeq = 0;
+  const lastToken = (s) => s.split(/\s+/).pop();
+  function hideSuggest() { suggest.classList.add('hidden'); suggest.innerHTML = ''; }
+  search.addEventListener('input', () => {
+    clearTimeout(acTimer);
+    const token = lastToken(search.value).trim();
+    if (!token) return hideSuggest();
+    const seq = ++acSeq;
+    acTimer = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/autocomplete?source=${$('source').value}&q=${encodeURIComponent(token)}`);
+        const { items } = await r.json();
+        if (seq !== acSeq) return;
+        if (!items.length) return hideSuggest();
+        suggest.innerHTML = '';
+        items.forEach(it => {
+          const row = document.createElement('div');
+          row.className = 'flex items-baseline gap-2 px-3 py-1.5 hover:bg-gray-800 cursor-pointer text-sm';
+          row.innerHTML = `<span class="flex-1 break-all" style="color:${CAT_COLOR[it.category]||'#e5e7eb'}"></span><span class="text-xs text-gray-500"></span>`;
+          row.children[0].textContent = it.value;
+          row.children[1].textContent = compact(it.count);
+          row.addEventListener('mousedown', ev => {
+            ev.preventDefault();
+            const parts = search.value.split(/\s+/); parts[parts.length-1] = it.value;
+            search.value = parts.join(' ') + ' '; hideSuggest(); search.focus();
+          });
+          suggest.appendChild(row);
+        });
+        suggest.classList.remove('hidden');
+      } catch (e) { hideSuggest(); }
+    }, 250);
+  });
+  search.addEventListener('keydown', e => { if (e.key === 'Escape') hideSuggest(); if (e.key === 'Enter') { hideSuggest(); run(); } });
+  search.addEventListener('blur', () => setTimeout(hideSuggest, 150));
+
+  // ---- results ----
+  function addCard({ imageUrl, prompt, label, dry }) {
+    const card = document.createElement('div');
+    card.className = 'fade-in bg-gray-900 border rounded-lg p-2 ' + (dry ? 'border-dashed border-gray-700' : 'border-gray-800');
+    if (imageUrl) {
+      const a = document.createElement('a'); a.href = imageUrl; a.download = 'novelai.png';
+      a.innerHTML = `<img src="${imageUrl}" class="w-full rounded" />`;
+      card.appendChild(a);
+    }
+    const lab = document.createElement('div');
+    lab.className = 'flex items-center gap-2 text-xs text-gray-400 mt-1';
+    lab.innerHTML = `<span class="flex-1"></span>`;
+    lab.children[0].textContent = label + (dry ? ' (dry run)' : '');
+    const copy = document.createElement('button');
+    copy.className = 'text-brand-500'; copy.textContent = '📋';
+    copy.addEventListener('click', () => navigator.clipboard.writeText(prompt).then(() => { copy.textContent = '✓'; setTimeout(() => copy.textContent = '📋', 1000); }));
+    lab.appendChild(copy);
+    card.appendChild(lab);
+    const det = document.createElement('details'); if (dry) det.open = true;
+    det.className = 'mt-1';
+    det.innerHTML = `<summary class="cursor-pointer text-brand-500 text-xs">prompt</summary><div class="text-[11px] text-gray-300 break-words whitespace-pre-wrap mt-1"></div>`;
+    det.querySelector('div').textContent = prompt;
+    card.appendChild(det);
+    $('results').prepend(card);
+  }
+  $('clear').addEventListener('click', () => { $('results').innerHTML = ''; $('status').textContent = ''; });
+
+  // ---- run ----
+  const setStatus = (m) => $('status').textContent = m;
+  function setRunning(s) { running = s; $('run').disabled = s; $('stop').disabled = !s; }
+  $('stop').addEventListener('click', () => { setStatus('停止します...'); running = false; });
+
+  async function generateOne(tags, label, dry) {
+    const positive = buildPrompt(tags);
+    if (dry) { addCard({ prompt: positive, label, dry: true }); return; }
+    setStatus(`生成中: ${label} ...`);
+    const r = await fetch('/api/studio/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ positive, negative: $('negative').value, tags }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    addCard({ imageUrl: data.image_url, prompt: positive, label });
+  }
+
+  async function run() {
+    if (running) return;
+    const dry = $('dry').checked;
+    setRunning(true); $('results').innerHTML = '';
+    try {
+      const tags = search.value.trim();
+      if (!tags) { setStatus('検索タグを入力してください'); return; }
+      setStatus(`${$('source').value} 検索中: ${tags} ...`);
+      const r = await fetch(`/api/subjects?source=${$('source').value}&tags=${encodeURIComponent(tags)}&limit=${$('limit').value}`);
+      const { items } = await r.json();
+      if (!items.length) { setStatus('投稿が見つかりませんでした'); return; }
+
+      if ($('mode').value === 'shuffle') {
+        if (!dry && !confirm('NovelAIで1枚生成します（Anlas消費）。続行しますか？')) { setStatus('キャンセル'); return; }
+        const pool = [...new Set(items.flatMap(scopedTags))];
+        await generateOne(shuffle(pool).slice(0, 14), 'shuffle', dry);
+      } else {
+        const targets = items.filter(it => scopedTags(it).length);
+        if (!dry && targets.length && !confirm(`最大${targets.length}枚生成します（${targets.length}回Anlas消費）。続行？`)) { setStatus('キャンセル'); return; }
+        for (let i = 0; i < targets.length; i++) {
+          if (!running) break;
+          await generateOne(scopedTags(targets[i]), `#${targets[i].id} (${i+1}/${targets.length})`, dry);
+          if (!dry && running) await sleep(1500);
+        }
+      }
+      setStatus(running ? '完了' : '停止しました');
+    } catch (e) { console.error(e); setStatus('エラー: ' + e.message); }
+    finally { setRunning(false); }
+  }
+  $('run').addEventListener('click', run);
+
+  // ---- init ----
+  $('source').value = LS.get('studio_source', 'danbooru');
+  $('source').addEventListener('change', e => { LS.set('studio_source', e.target.value); hideSuggest(); });
+  $('negative').value = LS.get('studio_negative', DEFAULT_NEGATIVE);
+  $('negative').addEventListener('change', e => LS.set('studio_negative', e.target.value));
+  syncPresets();
+})();
+</script>
+{% endblock %}
