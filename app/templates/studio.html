@@ -67,6 +67,9 @@
         </select>
       </label>
       <label class="flex items-center gap-2 col-span-2">
+        <input id="charsep" type="checkbox" class="accent-brand-500" /> キャラを分ける (V4.5 character_prompts・1件ずつ時)
+      </label>
+      <label class="flex items-center gap-2 col-span-2">
         <input id="dry" type="checkbox" class="accent-brand-500" /> 生成せずプロンプトだけ確認 (dry run)
       </label>
     </div>
@@ -216,17 +219,25 @@
   function setRunning(s) { running = s; $('run').disabled = s; $('stop').disabled = !s; }
   $('stop').addEventListener('click', () => { setStatus('停止します...'); running = false; });
 
-  async function generateOne(tags, label, dry) {
+  async function generateOne(tags, label, dry, characters) {
     const positive = buildPrompt(tags);
-    if (dry) { addCard({ prompt: positive, label, dry: true }); return; }
-    setStatus(`生成中: ${label} ...`);
+    // V4.5: 各キャラを個別プロンプト化（チェックON かつ キャラがいる場合）
+    const charPrompts = ($('charsep').checked && characters && characters.length)
+      ? characters.map(c => ({ prompt: tagToNai(c) })) : null;
+    const labelEx = charPrompts ? `${label} [${charPrompts.length}キャラ]` : label;
+    if (dry) {
+      const extra = charPrompts ? '\n\ncharacter_prompts:\n- ' + charPrompts.map(c => c.prompt).join('\n- ') : '';
+      addCard({ prompt: positive + extra, label: labelEx, dry: true });
+      return;
+    }
+    setStatus(`生成中: ${labelEx} ...`);
     const r = await fetch('/api/studio/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ positive, negative: $('negative').value, tags }),
+      body: JSON.stringify({ positive, negative: $('negative').value, tags, character_prompts: charPrompts }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-    addCard({ imageUrl: data.image_url, prompt: positive, label });
+    addCard({ imageUrl: data.image_url, prompt: positive, label: labelEx });
   }
 
   async function run() {
@@ -250,7 +261,7 @@
         if (!dry && targets.length && !confirm(`最大${targets.length}枚生成します（${targets.length}回Anlas消費）。続行？`)) { setStatus('キャンセル'); return; }
         for (let i = 0; i < targets.length; i++) {
           if (!running) break;
-          await generateOne(scopedTags(targets[i]), `#${targets[i].id} (${i+1}/${targets.length})`, dry);
+          await generateOne(scopedTags(targets[i]), `#${targets[i].id} (${i+1}/${targets.length})`, dry, targets[i].character);
           if (!dry && running) await sleep(1500);
         }
       }

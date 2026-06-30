@@ -1,12 +1,25 @@
-"""NovelAI API service for image generation."""
+"""NovelAI image generation, built on the novelai-python SDK.
 
-import io
+The SDK owns the NovelAI protocol (auth, the V4.5 payload, ZIP→PNG
+extraction, character_prompts). This module is a thin wrapper that maps
+our config/inputs onto it and saves the result into ``static/``.
+"""
+
 import logging
+import random
 import uuid
-import zipfile
 from pathlib import Path
+from typing import Any
 
-import httpx
+from pydantic import SecretStr
+
+from novelai_python import ApiCredential
+from novelai_python.sdk.ai.generate_image import (
+    Character,
+    GenerateImageInfer,
+    Model,
+    Sampler,
+)
 
 from app.config import (
     NAI_CFG_SCALE,
@@ -21,7 +34,30 @@ from app.config import (
 
 logger = logging.getLogger(__name__)
 
-NAI_API_URL = "https://image.api.novelai.net/ai/generate-image"
+
+def _model() -> Model:
+    try:
+        return Model(NAI_MODEL)
+    except ValueError:
+        logger.warning("Unknown NAI_MODEL=%r, falling back to V4.5 full", NAI_MODEL)
+        return Model.NAI_DIFFUSION_4_5_FULL
+
+
+def _sampler(name: str) -> Sampler:
+    try:
+        return Sampler(name)
+    except ValueError:
+        return Sampler.K_EULER_ANCESTRAL
+
+
+def _characters(character_prompts: list[dict[str, Any]] | None) -> list[Character]:
+    chars: list[Character] = []
+    for c in character_prompts or []:
+        prompt = (c.get("prompt") or "").strip()
+        if not prompt:
+            continue
+        chars.append(Character(prompt=prompt, uc=(c.get("uc") or "")))
+    return chars
 
 
 async def generate_image(
@@ -34,88 +70,51 @@ async def generate_image(
     cfg_scale: float = NAI_CFG_SCALE,
     sampler: str = NAI_SAMPLER,
     seed: int | None = None,
+    character_prompts: list[dict[str, Any]] | None = None,
 ) -> str | None:
-    """Generate an image via NovelAI API and save to static/.
+    """Generate an image via the NovelAI SDK and save it to ``static/``.
 
-    Returns the relative path to the saved image, or None on failure.
+    ``character_prompts`` is an optional list of ``{"prompt", "uc"}`` dicts
+    for V4.5 per-character prompting. Returns the saved filename, or None.
     """
     if not NAI_TOKEN:
         logger.error("NAI_TOKEN is not configured")
         return None
 
-    import random
-
     if seed is None:
         seed = random.randint(0, 2**32 - 1)
 
-    payload = {
-        "input": positive_prompt,
-        "model": NAI_MODEL,
-        "action": "generate",
-        "parameters": {
-            "params_version": 3,
-            "width": width,
-            "height": height,
-            "scale": cfg_scale,
-            "sampler": sampler,
-            "steps": steps,
-            "seed": seed,
-            "n_samples": 1,
-            "ucPreset": 0,
-            "qualityToggle": True,
-            "autoSmea": False,
-            "dynamic_thresholding": False,
-            "controlnet_strength": 1,
-            "legacy": False,
-            "add_original_image": True,
-            "cfg_rescale": 0,
-            "noise_schedule": "karras",
-            "legacy_v3_extend": False,
-            "negative_prompt": negative_prompt,
-            # V4/V4.5 prompt structure (character_prompts left empty for now)
-            "characterPrompts": [],
-            "v4_prompt": {
-                "caption": {"base_caption": positive_prompt, "char_captions": []},
-                "use_coords": False,
-                "use_order": True,
-            },
-            "v4_negative_prompt": {
-                "caption": {"base_caption": negative_prompt, "char_captions": []},
-                "use_coords": False,
-                "use_order": False,
-            },
-        },
-    }
+    credential = ApiCredential(api_token=SecretStr(NAI_TOKEN))
+    chars = _characters(character_prompts)
 
-    headers = {
-        "Authorization": f"Bearer {NAI_TOKEN}",
-        "Content-Type": "application/json",
-    }
+    gen = GenerateImageInfer.build_generate(
+        prompt=positive_prompt,
+        model=_model(),
+        negative_prompt=negative_prompt,
+        width=width,
+        height=height,
+        steps=steps,
+        sampler=_sampler(sampler),
+        seed=seed,
+        character_prompts=chars or None,
+        qualityToggle=True,
+    )
+    # build_generate has no cfg-scale arg; set it on the parameters directly
+    if hasattr(gen.parameters, "scale"):
+        gen.parameters.scale = cfg_scale
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        try:
-            resp = await client.post(NAI_API_URL, json=payload, headers=headers)
-            resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            logger.error("NovelAI API error: %s", exc)
-            return None
-
-    # NAI returns a zip file containing the image
     try:
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            image_names = [n for n in zf.namelist() if n.endswith(".png")]
-            if not image_names:
-                logger.error("No PNG found in NAI response")
-                return None
-            image_data = zf.read(image_names[0])
-    except (zipfile.BadZipFile, KeyError) as exc:
-        logger.error("Failed to extract image from NAI response: %s", exc)
+        resp = await gen.request(session=credential)
+    except Exception as exc:  # SDK raises NovelAiError subclasses
+        logger.error("NovelAI generation failed: %s", exc)
         return None
 
-    # Save image
-    filename = f"{uuid.uuid4().hex}.png"
-    filepath = Path(STATIC_DIR) / filename
-    filepath.write_bytes(image_data)
-    logger.info("Saved generated image to %s", filepath)
+    if not resp.files:
+        logger.error("NovelAI returned no files")
+        return None
 
+    _name, data = resp.files[0]
+    filename = f"{uuid.uuid4().hex}.png"
+    (Path(STATIC_DIR) / filename).write_bytes(data)
+    logger.info("Saved generated image to %s", filename)
     return filename

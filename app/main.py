@@ -203,10 +203,13 @@ async def api_studio_generate(
     positive = (payload.get("positive") or "").strip()
     negative = (payload.get("negative") or "").strip()
     tags = payload.get("tags") or []
+    character_prompts = payload.get("character_prompts") or None
     if not positive:
         return JSONResponse({"error": "positive prompt is empty"}, status_code=400)
 
-    filename = await generate_image(positive, negative)
+    filename = await generate_image(
+        positive, negative, character_prompts=character_prompts
+    )
     if filename is None:
         return JSONResponse(
             {"error": "Image generation failed. Check NAI_TOKEN and API status."},
