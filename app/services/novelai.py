@@ -1,25 +1,19 @@
-"""NovelAI image generation, built on the novelai-python SDK.
+"""NovelAI image generation, built on the novelai-sdk (``novelai`` package).
 
-The SDK owns the NovelAI protocol (auth, the V4.5 payload, ZIP→PNG
-extraction, character_prompts). This module is a thin wrapper that maps
-our config/inputs onto it and saves the result into ``static/``.
+The SDK owns the NovelAI protocol (auth, the V4.5 payload, decoding,
+character prompts). This module maps our config/inputs onto
+``GenerateImageParams`` and saves the returned image into ``static/``.
 """
 
+import inspect
 import logging
 import random
 import uuid
 from pathlib import Path
 from typing import Any
 
-from pydantic import SecretStr
-
-from novelai_python import ApiCredential
-from novelai_python.sdk.ai.generate_image import (
-    Character,
-    GenerateImageInfer,
-    Model,
-    Sampler,
-)
+from novelai import AsyncNovelAI
+from novelai.types import Character, GenerateImageParams
 
 from app.config import (
     NAI_CFG_SCALE,
@@ -34,20 +28,22 @@ from app.config import (
 
 logger = logging.getLogger(__name__)
 
+# Models accepted by GenerateImageParams (Literal). Anything else falls back.
+_VALID_MODELS = {
+    "nai-diffusion-4-5-full",
+    "nai-diffusion-4-5-curated",
+    "nai-diffusion-4-full",
+    "nai-diffusion-4-curated",
+    "nai-diffusion-3",
+    "nai-diffusion-3-furry",
+}
 
-def _model() -> Model:
-    try:
-        return Model(NAI_MODEL)
-    except ValueError:
-        logger.warning("Unknown NAI_MODEL=%r, falling back to V4.5 full", NAI_MODEL)
-        return Model.NAI_DIFFUSION_4_5_FULL
 
-
-def _sampler(name: str) -> Sampler:
-    try:
-        return Sampler(name)
-    except ValueError:
-        return Sampler.K_EULER_ANCESTRAL
+def _model() -> str:
+    if NAI_MODEL in _VALID_MODELS:
+        return NAI_MODEL
+    logger.warning("Unknown NAI_MODEL=%r, falling back to nai-diffusion-4-5-full", NAI_MODEL)
+    return "nai-diffusion-4-5-full"
 
 
 def _characters(character_prompts: list[dict[str, Any]] | None) -> list[Character]:
@@ -56,7 +52,7 @@ def _characters(character_prompts: list[dict[str, Any]] | None) -> list[Characte
         prompt = (c.get("prompt") or "").strip()
         if not prompt:
             continue
-        chars.append(Character(prompt=prompt, uc=(c.get("uc") or "")))
+        chars.append(Character(prompt=prompt, negative_prompt=(c.get("uc") or "")))
     return chars
 
 
@@ -84,37 +80,35 @@ async def generate_image(
     if seed is None:
         seed = random.randint(0, 2**32 - 1)
 
-    credential = ApiCredential(api_token=SecretStr(NAI_TOKEN))
     chars = _characters(character_prompts)
-
-    gen = GenerateImageInfer.build_generate(
+    params = GenerateImageParams(
         prompt=positive_prompt,
         model=_model(),
-        negative_prompt=negative_prompt,
-        width=width,
-        height=height,
+        negative_prompt=negative_prompt or None,
+        size=(width, height),
         steps=steps,
-        sampler=_sampler(sampler),
+        scale=cfg_scale,
+        sampler=sampler,
         seed=seed,
-        character_prompts=chars or None,
-        qualityToggle=True,
+        characters=chars or None,
     )
-    # build_generate has no cfg-scale arg; set it on the parameters directly
-    if hasattr(gen.parameters, "scale"):
-        gen.parameters.scale = cfg_scale
 
+    client = AsyncNovelAI(api_key=NAI_TOKEN)
     try:
-        resp = await gen.request(session=credential)
-    except Exception as exc:  # SDK raises NovelAiError subclasses
+        images = await client.image.generate(params)
+    except Exception as exc:  # SDK raises NovelAIError subclasses
         logger.error("NovelAI generation failed: %s", exc)
         return None
+    finally:
+        closer = client.close()
+        if inspect.isawaitable(closer):
+            await closer
 
-    if not resp.files:
-        logger.error("NovelAI returned no files")
+    if not images:
+        logger.error("NovelAI returned no images")
         return None
 
-    _name, data = resp.files[0]
     filename = f"{uuid.uuid4().hex}.png"
-    (Path(STATIC_DIR) / filename).write_bytes(data)
+    images[0].save(Path(STATIC_DIR) / filename, format="PNG")
     logger.info("Saved generated image to %s", filename)
     return filename
